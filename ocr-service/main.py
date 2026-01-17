@@ -1,7 +1,8 @@
 import os
 import re
+import difflib
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -11,6 +12,9 @@ import pytesseract
 
 TCG_API_KEY = os.environ.get("TCG_API_KEY")
 TCG_BASE_URL = "https://api.pokemontcg.io/v2"
+TCG_CARD_NAMES_URL = f"{TCG_BASE_URL}/cards?q=name:%20*&select=name&pageSize=250"
+
+_cached_names: List[str] = []
 
 app = FastAPI()
 
@@ -53,7 +57,53 @@ def extract_card_number(texts: List[str]) -> Optional[str]:
     return None
 
 
-def extract_name(texts: List[str]) -> Optional[str]:
+def fetch_card_names() -> List[str]:
+    global _cached_names
+
+    if _cached_names:
+        return _cached_names
+
+    headers = {}
+    if TCG_API_KEY:
+        headers["X-Api-Key"] = TCG_API_KEY
+
+    names = set()
+    page = 1
+
+    while page <= 2:
+        response = requests.get(
+            TCG_CARD_NAMES_URL,
+            params={"page": page},
+            headers=headers,
+            timeout=30,
+        )
+        if response.status_code != 200:
+            break
+
+        data = response.json().get("data", [])
+        if not data:
+            break
+
+        for item in data:
+            name = item.get("name")
+            if name:
+                names.add(name)
+
+        page += 1
+
+    _cached_names = sorted(names)
+    return _cached_names
+
+
+def match_name(candidate: str, names: List[str]) -> Optional[str]:
+    if not candidate:
+        return None
+
+    matches = difflib.get_close_matches(candidate, names, n=1, cutoff=0.72)
+    return matches[0] if matches else None
+
+
+def extract_name(texts: List[str], names: List[str]) -> Tuple[Optional[str], Optional[str]]:
     candidates = []
     for text in texts:
         cleaned = re.sub(r"[^A-Za-z\s'\-]", " ", text).strip()
@@ -62,10 +112,12 @@ def extract_name(texts: List[str]) -> Optional[str]:
             candidates.append(cleaned)
 
     if not candidates:
-        return None
+        return None, None
 
     preferred = sorted(candidates, key=lambda value: (len(value), value))
-    return preferred[-1]
+    best_raw = preferred[-1]
+    matched = match_name(best_raw, names)
+    return matched, best_raw
 
 
 def build_query(name: Optional[str], number: Optional[str]) -> Optional[str]:
@@ -102,12 +154,29 @@ async def scan_card(file: UploadFile = File(...)):
     results = [line.strip() for line in raw_text.splitlines() if line.strip()]
     texts = [text for text in results if text]
 
-    name = extract_name(texts)
+    names = fetch_card_names()
+    name, raw_name = extract_name(texts, names)
     number = extract_card_number(texts)
     query = build_query(name, number)
 
     if not query:
-        raise HTTPException(status_code=422, detail="Unable to extract card info")
+        return {
+            "card_id": None,
+            "name": raw_name or "",
+            "set_name": "",
+            "set_code": "",
+            "card_number": number or "",
+            "rarity": "",
+            "confidence": 30,
+            "price_eur": None,
+            "image_url": None,
+            "raw": {
+                "ocr_name": raw_name,
+                "ocr_number": number,
+                "query": "",
+            },
+            "error": "not_found",
+        }
 
     card = fetch_card_by_query(query)
 
@@ -120,7 +189,7 @@ async def scan_card(file: UploadFile = File(...)):
     if not card:
         return {
             "card_id": None,
-            "name": name or "",
+            "name": name or raw_name or "",
             "set_name": "",
             "set_code": "",
             "card_number": number or "",
@@ -129,7 +198,7 @@ async def scan_card(file: UploadFile = File(...)):
             "price_eur": None,
             "image_url": None,
             "raw": {
-                "ocr_name": name,
+                "ocr_name": raw_name,
                 "ocr_number": number,
                 "query": query,
             },
@@ -147,7 +216,7 @@ async def scan_card(file: UploadFile = File(...)):
         "price_eur": card.get("cardmarket", {}).get("prices", {}).get("averageSellPrice"),
         "image_url": (card.get("images") or {}).get("small"),
         "raw": {
-            "ocr_name": name,
+            "ocr_name": raw_name,
             "ocr_number": number,
             "query": query,
         },
