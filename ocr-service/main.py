@@ -35,11 +35,11 @@ def fetch_card_by_query(query: str):
             headers=headers,
             timeout=45,
         )
-    except requests.Timeout as exc:
-        raise HTTPException(status_code=504, detail="TCG API timeout") from exc
+    except requests.Timeout:
+        return None
 
     if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch card info")
+        return None
 
     data = response.json().get("data", [])
     return data[0] if data else None
