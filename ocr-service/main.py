@@ -7,8 +7,7 @@ import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-import easyocr
-import numpy as np
+import pytesseract
 
 TCG_API_KEY = os.environ.get("TCG_API_KEY")
 TCG_BASE_URL = "https://api.pokemontcg.io/v2"
@@ -22,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-reader = easyocr.Reader(["en"], gpu=False, verbose=False)
 
 
 def fetch_card_by_query(query: str):
@@ -77,9 +75,8 @@ async def scan_card(file: UploadFile = File(...)):
 
     content = await file.read()
     image = Image.open(BytesIO(content)).convert("RGB")
-    image_array = np.array(image)
-
-    results = reader.readtext(image_array, detail=0)
+    raw_text = pytesseract.image_to_string(image, lang="eng")
+    results = [line.strip() for line in raw_text.splitlines() if line.strip()]
     texts = [text for text in results if text]
 
     name = extract_name(texts)
