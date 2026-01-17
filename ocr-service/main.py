@@ -6,7 +6,7 @@ from typing import List, Optional
 import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+from PIL import Image, ImageOps
 import pytesseract
 
 TCG_API_KEY = os.environ.get("TCG_API_KEY")
@@ -57,6 +57,7 @@ def extract_name(texts: List[str]) -> Optional[str]:
     candidates = []
     for text in texts:
         cleaned = re.sub(r"[^A-Za-z\s'\-]", " ", text).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
         if 3 <= len(cleaned) <= 32:
             candidates.append(cleaned)
 
@@ -79,6 +80,16 @@ def build_query(name: Optional[str], number: Optional[str]) -> Optional[str]:
     return " ".join(clauses) if clauses else None
 
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("L")
+    image = ImageOps.autocontrast(image)
+    image = image.resize((image.width * 2, image.height * 2))
+    threshold = 160
+    image = image.point(lambda value: 255 if value > threshold else 0)
+    return image
+
+
 @app.post("/scan")
 async def scan_card(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -86,7 +97,8 @@ async def scan_card(file: UploadFile = File(...)):
 
     content = await file.read()
     image = Image.open(BytesIO(content)).convert("RGB")
-    raw_text = pytesseract.image_to_string(image, lang="eng", config="--psm 6")
+    processed = preprocess_image(image)
+    raw_text = pytesseract.image_to_string(processed, lang="eng", config="--psm 6")
     results = [line.strip() for line in raw_text.splitlines() if line.strip()]
     texts = [text for text in results if text]
 
