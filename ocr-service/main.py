@@ -28,7 +28,16 @@ def fetch_card_by_query(query: str):
     if TCG_API_KEY:
         headers["X-Api-Key"] = TCG_API_KEY
 
-    response = requests.get(f"{TCG_BASE_URL}/cards", params={"q": query, "pageSize": 1}, headers=headers, timeout=20)
+    try:
+        response = requests.get(
+            f"{TCG_BASE_URL}/cards",
+            params={"q": query, "pageSize": 1},
+            headers=headers,
+            timeout=45,
+        )
+    except requests.Timeout as exc:
+        raise HTTPException(status_code=504, detail="TCG API timeout") from exc
+
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="Failed to fetch card info")
 
@@ -97,7 +106,23 @@ async def scan_card(file: UploadFile = File(...)):
         card = fetch_card_by_query(f'number:"{number}"')
 
     if not card:
-        raise HTTPException(status_code=404, detail="Card not found")
+        return {
+            "card_id": None,
+            "name": name or "",
+            "set_name": "",
+            "set_code": "",
+            "card_number": number or "",
+            "rarity": "",
+            "confidence": 30,
+            "price_eur": None,
+            "image_url": None,
+            "raw": {
+                "ocr_name": name,
+                "ocr_number": number,
+                "query": query,
+            },
+            "error": "not_found",
+        }
 
     return {
         "card_id": card.get("id"),
