@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: pokecollect-ocr
+    env: docker
+    plan: free
+    rootDir: ocr-service
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: TCG_API_KEY
+        sync: false
