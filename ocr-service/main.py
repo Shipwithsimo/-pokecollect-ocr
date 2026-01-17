@@ -48,24 +48,26 @@ def extract_name(texts: List[str]) -> Optional[str]:
     candidates = []
     for text in texts:
         cleaned = re.sub(r"[^A-Za-z\s'\-]", " ", text).strip()
-        if 3 <= len(cleaned) <= 24:
+        if 3 <= len(cleaned) <= 32:
             candidates.append(cleaned)
 
     if not candidates:
         return None
 
-    candidates.sort(key=len)
-    return candidates[-1]
+    preferred = sorted(candidates, key=lambda value: (len(value), value))
+    return preferred[-1]
 
 
 def build_query(name: Optional[str], number: Optional[str]) -> Optional[str]:
-    if name and number:
-        return f'name:"{name}" number:"{number}"'
+    clauses = []
+
     if name:
-        return f'name:"{name}"'
+        clauses.append(f'name:"{name}"')
+
     if number:
-        return f'number:"{number}"'
-    return None
+        clauses.append(f'number:"{number}"')
+
+    return " ".join(clauses) if clauses else None
 
 
 @app.post("/scan")
@@ -75,7 +77,7 @@ async def scan_card(file: UploadFile = File(...)):
 
     content = await file.read()
     image = Image.open(BytesIO(content)).convert("RGB")
-    raw_text = pytesseract.image_to_string(image, lang="eng")
+    raw_text = pytesseract.image_to_string(image, lang="eng", config="--psm 6")
     results = [line.strip() for line in raw_text.splitlines() if line.strip()]
     texts = [text for text in results if text]
 
@@ -87,6 +89,13 @@ async def scan_card(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Unable to extract card info")
 
     card = fetch_card_by_query(query)
+
+    if not card and name:
+        card = fetch_card_by_query(f'name:"{name}"')
+
+    if not card and number:
+        card = fetch_card_by_query(f'number:"{number}"')
+
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
 
