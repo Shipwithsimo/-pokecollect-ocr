@@ -33,15 +33,7 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     if scale < 1:
         image = image.resize((int(width * scale), int(height * scale)))
 
-    width, height = image.size
-    crop_ratio = 0.8
-    crop_width = int(width * crop_ratio)
-    crop_height = int(height * crop_ratio)
-    left = max((width - crop_width) // 2, 0)
-    top = max((height - crop_height) // 2, 0)
-    right = left + crop_width
-    bottom = top + crop_height
-    return image.crop((left, top, right, bottom))
+    return image
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -55,7 +47,8 @@ def call_openai_vision(image_base64: str) -> Optional[Dict[str, str]]:
         return None
 
     prompt = (
-        "Estrai i dati della carta Pokemon dall'immagine. "
+        "Sei un esperto di carte Pokemon TCG. "
+        "Dall'immagine, estrai i dati esatti della carta. "
         "Rispondi SOLO in JSON con chiavi: name, card_number, set_name, set_code, rarity, language. "
         "Se un campo non e' visibile, usa stringa vuota."
     )
@@ -64,7 +57,7 @@ def call_openai_vision(image_base64: str) -> Optional[Dict[str, str]]:
         "model": "gpt-4o",
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "You extract structured data from trading cards."},
+            {"role": "system", "content": "You extract structured data from Pokemon TCG cards."},
             {
                 "role": "user",
                 "content": [
@@ -90,7 +83,8 @@ def call_openai_vision(image_base64: str) -> Optional[Dict[str, str]]:
     if response.status_code != 200:
         return None
 
-    content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+    payload = response.json()
+    content = payload.get("choices", [{}])[0].get("message", {}).get("content")
     if not content:
         return None
 
