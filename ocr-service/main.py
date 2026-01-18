@@ -1,20 +1,19 @@
+import base64
+import json
 import os
-import re
-import difflib
 from io import BytesIO
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps
-import pytesseract
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TCG_API_KEY = os.environ.get("TCG_API_KEY")
-TCG_BASE_URL = "https://api.pokemontcg.io/v2"
-TCG_CARD_NAMES_URL = f"{TCG_BASE_URL}/cards?q=name:%20*&select=name&pageSize=250"
 
-_cached_names: List[str] = []
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+TCG_BASE_URL = "https://api.pokemontcg.io/v2"
 
 app = FastAPI()
 
@@ -26,120 +25,185 @@ app.add_middleware(
 )
 
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    max_side = 1024
+    width, height = image.size
+    scale = max_side / max(width, height)
+    if scale < 1:
+        image = image.resize((int(width * scale), int(height * scale)))
 
-def fetch_card_by_query(query: str):
-    headers = {}
-    if TCG_API_KEY:
-        headers["X-Api-Key"] = TCG_API_KEY
+    width, height = image.size
+    crop_ratio = 0.8
+    crop_width = int(width * crop_ratio)
+    crop_height = int(height * crop_ratio)
+    left = max((width - crop_width) // 2, 0)
+    top = max((height - crop_height) // 2, 0)
+    right = left + crop_width
+    bottom = top + crop_height
+    return image.crop((left, top, right, bottom))
 
-    try:
-        response = requests.get(
-            f"{TCG_BASE_URL}/cards",
-            params={"q": query, "pageSize": 1},
-            headers=headers,
-            timeout=45,
-        )
-    except requests.Timeout:
+
+def image_to_base64(image: Image.Image) -> str:
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=80)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def call_openai_vision(image_base64: str) -> Optional[Dict[str, str]]:
+    if not OPENAI_API_KEY:
         return None
 
+    prompt = (
+        "Estrai i dati della carta Pokemon dall'immagine. "
+        "Rispondi SOLO in JSON con chiavi: name, card_number, set_name, set_code, rarity, language. "
+        "Se un campo non e' visibile, usa stringa vuota."
+    )
+
+    payload = {
+        "model": "gpt-4o",
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": "You extract structured data from trading cards."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        },
+                    },
+                ],
+            },
+        ],
+        "max_tokens": 400,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
         return None
 
-    data = response.json().get("data", [])
-    return data[0] if data else None
+    content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+    if not content:
+        return None
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+
+    return {
+        "name": (data.get("name") or "").strip(),
+        "card_number": (data.get("card_number") or "").strip(),
+        "set_name": (data.get("set_name") or "").strip(),
+        "set_code": (data.get("set_code") or "").strip(),
+        "rarity": (data.get("rarity") or "").strip(),
+        "language": (data.get("language") or "").strip(),
+    }
 
 
-def extract_card_number(texts: List[str]) -> Optional[str]:
-    for text in texts:
-        match = re.search(r"\b(\d{1,3})\s*/\s*(\d{1,3})\b", text)
-        if match:
-            return match.group(0).replace(" ", "")
-    return None
-
-
-def fetch_card_names() -> List[str]:
-    global _cached_names
-
-    if _cached_names:
-        return _cached_names
-
+def fetch_cards_by_query(query: str, page_size: int = 20) -> List[Dict]:
     headers = {}
     if TCG_API_KEY:
         headers["X-Api-Key"] = TCG_API_KEY
 
-    names = set()
-    page = 1
+    response = requests.get(
+        f"{TCG_BASE_URL}/cards",
+        params={"q": query, "pageSize": page_size},
+        headers=headers,
+        timeout=30,
+    )
 
-    while page <= 2:
-        response = requests.get(
-            TCG_CARD_NAMES_URL,
-            params={"page": page},
-            headers=headers,
-            timeout=30,
-        )
-        if response.status_code != 200:
-            break
+    if response.status_code != 200:
+        return []
 
-        data = response.json().get("data", [])
-        if not data:
-            break
-
-        for item in data:
-            name = item.get("name")
-            if name:
-                names.add(name)
-
-        page += 1
-
-    _cached_names = sorted(names)
-    return _cached_names
+    return response.json().get("data", [])
 
 
-def match_name(candidate: str, names: List[str]) -> Optional[str]:
-    if not candidate:
-        return None
-
-    matches = difflib.get_close_matches(candidate, names, n=1, cutoff=0.72)
-    return matches[0] if matches else None
+def similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return 1.0 if a.lower() == b.lower() else 0.5 if a.lower() in b.lower() else 0.0
 
 
-def extract_name(texts: List[str], names: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    candidates = []
-    for text in texts:
-        cleaned = re.sub(r"[^A-Za-z\s'\-]", " ", text).strip()
-        cleaned = re.sub(r"\s+", " ", cleaned)
-        if 3 <= len(cleaned) <= 32:
-            candidates.append(cleaned)
-
-    if not candidates:
-        return None, None
-
-    preferred = sorted(candidates, key=lambda value: (len(value), value))
-    best_raw = preferred[-1]
-    matched = match_name(best_raw, names)
-    return matched, best_raw
-
-
-def build_query(name: Optional[str], number: Optional[str]) -> Optional[str]:
-    clauses = []
+def score_card(card: Dict, extracted: Dict[str, str]) -> float:
+    score = 0.0
+    name = extracted.get("name")
+    number = extracted.get("card_number")
+    set_name = extracted.get("set_name")
+    set_code = extracted.get("set_code")
+    rarity = extracted.get("rarity")
 
     if name:
-        clauses.append(f'name:"{name}"')
-
+        score += similarity(name, card.get("name", "")) * 40
     if number:
-        clauses.append(f'number:"{number}"')
+        score += 30 if number.replace(" ", "") == card.get("number", "") else 0
+    if set_name:
+        score += similarity(set_name, card.get("set", {}).get("name", "")) * 15
+    if set_code:
+        score += similarity(set_code, card.get("set", {}).get("id", "")) * 10
+    if rarity:
+        score += similarity(rarity, card.get("rarity", "")) * 5
 
-    return " ".join(clauses) if clauses else None
+    return score
 
 
-def preprocess_image(image: Image.Image) -> Image.Image:
-    image = ImageOps.exif_transpose(image)
-    image = image.convert("L")
-    image = ImageOps.autocontrast(image)
-    image = image.resize((image.width * 2, image.height * 2))
-    threshold = 160
-    image = image.point(lambda value: 255 if value > threshold else 0)
-    return image
+def build_queries(extracted: Dict[str, str]) -> List[str]:
+    name = extracted.get("name")
+    number = extracted.get("card_number")
+    set_name = extracted.get("set_name")
+
+    queries = []
+    if name and number and set_name:
+        queries.append(f'name:"{name}" number:"{number}" set.name:"{set_name}"')
+    if name and number:
+        queries.append(f'name:"{name}" number:"{number}"')
+    if name and set_name:
+        queries.append(f'name:"{name}" set.name:"{set_name}"')
+    if name:
+        queries.append(f'name:"{name}"')
+
+    return queries
+
+
+def to_candidate(card: Dict, confidence: float) -> Dict:
+    return {
+        "card_id": card.get("id"),
+        "name": card.get("name"),
+        "set_name": card.get("set", {}).get("name"),
+        "set_code": card.get("set", {}).get("id"),
+        "card_number": card.get("number"),
+        "rarity": card.get("rarity"),
+        "confidence": int(min(confidence, 100)),
+        "price_eur": card.get("cardmarket", {}).get("prices", {}).get("averageSellPrice"),
+        "image_url": (card.get("images") or {}).get("small"),
+    }
+
+
+def find_candidates(extracted: Dict[str, str]) -> List[Dict]:
+    seen: Dict[str, float] = {}
+    cards: Dict[str, Dict] = {}
+
+    for query in build_queries(extracted):
+        for card in fetch_cards_by_query(query):
+            card_id = card.get("id")
+            if not card_id:
+                continue
+            score = score_card(card, extracted)
+            if card_id not in seen or score > seen[card_id]:
+                seen[card_id] = score
+                cards[card_id] = card
+
+    ranked = sorted(seen.items(), key=lambda item: item[1], reverse=True)
+    top = ranked[:3]
+    return [to_candidate(cards[card_id], score) for card_id, score in top]
 
 
 @app.post("/scan")
@@ -148,76 +212,21 @@ async def scan_card(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
     content = await file.read()
-    image = Image.open(BytesIO(content)).convert("RGB")
+    image = Image.open(BytesIO(content))
     processed = preprocess_image(image)
-    raw_text = pytesseract.image_to_string(processed, lang="eng", config="--psm 6")
-    results = [line.strip() for line in raw_text.splitlines() if line.strip()]
-    texts = [text for text in results if text]
+    image_base64 = image_to_base64(processed)
 
-    names = fetch_card_names()
-    name, raw_name = extract_name(texts, names)
-    number = extract_card_number(texts)
-    query = build_query(name, number)
-
-    if not query:
+    extracted = call_openai_vision(image_base64)
+    if not extracted:
         return {
-            "card_id": None,
-            "name": raw_name or "",
-            "set_name": "",
-            "set_code": "",
-            "card_number": number or "",
-            "rarity": "",
-            "confidence": 30,
-            "price_eur": None,
-            "image_url": None,
-            "raw": {
-                "ocr_name": raw_name,
-                "ocr_number": number,
-                "query": "",
-            },
-            "error": "not_found",
+            "candidates": [],
+            "raw": {},
+            "error": "ocr_failed",
         }
 
-    card = fetch_card_by_query(query)
-
-    if not card and name:
-        card = fetch_card_by_query(f'name:"{name}"')
-
-    if not card and number:
-        card = fetch_card_by_query(f'number:"{number}"')
-
-    if not card:
-        return {
-            "card_id": None,
-            "name": name or raw_name or "",
-            "set_name": "",
-            "set_code": "",
-            "card_number": number or "",
-            "rarity": "",
-            "confidence": 30,
-            "price_eur": None,
-            "image_url": None,
-            "raw": {
-                "ocr_name": raw_name,
-                "ocr_number": number,
-                "query": query,
-            },
-            "error": "not_found",
-        }
+    candidates = find_candidates(extracted)
 
     return {
-        "card_id": card.get("id"),
-        "name": card.get("name"),
-        "set_name": card.get("set", {}).get("name"),
-        "set_code": card.get("set", {}).get("id"),
-        "card_number": card.get("number"),
-        "rarity": card.get("rarity"),
-        "confidence": 90,
-        "price_eur": card.get("cardmarket", {}).get("prices", {}).get("averageSellPrice"),
-        "image_url": (card.get("images") or {}).get("small"),
-        "raw": {
-            "ocr_name": raw_name,
-            "ocr_number": number,
-            "query": query,
-        },
+        "candidates": candidates,
+        "raw": extracted,
     }

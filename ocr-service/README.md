@@ -6,13 +6,9 @@
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export OPENAI_API_KEY=your_key
+export TCG_API_KEY=your_key
 uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Tesseract must be available in the system path. On macOS:
-
-```bash
-brew install tesseract
 ```
 
 ## Endpoint

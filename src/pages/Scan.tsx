@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { ScanResult } from "@/types/pokemon";
+import type { ScanCandidate, ScanResult } from "@/types/pokemon";
 import { collectionKeys } from "@/data/queries";
 import { scanCardImage } from "@/lib/ocr-api";
 import { cn } from "@/lib/utils";
@@ -24,7 +24,7 @@ export default function Scan() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
-  const [scanResults, setScanResults] = useState<ScanResult[]>([]);
+  const [scanResults, setScanResults] = useState<ScanCandidate[]>([]);
   const [selectedCards, setSelectedCards] = useState<Set<number>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -57,9 +57,10 @@ export default function Scan() {
     setIsScanning(true);
 
     try {
-      const result = (await scanCardImage(selectedFile)) as ScanResult & { error?: string };
-      setScanResults([result]);
-      if (result.error === "not_found") {
+      const result = (await scanCardImage(selectedFile)) as ScanResult;
+      const candidates = result.candidates ?? [];
+      setScanResults(candidates);
+      if (result.error === "ocr_failed" || candidates.length === 0) {
         toast.error("Carta non trovata. Prova con una foto piu' nitida.");
         setSelectedCards(new Set());
       } else {
