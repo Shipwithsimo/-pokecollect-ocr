@@ -109,12 +109,15 @@ def fetch_cards_by_query(query: str, page_size: int = 20) -> List[Dict]:
     if TCG_API_KEY:
         headers["X-Api-Key"] = TCG_API_KEY
 
-    response = requests.get(
-        f"{TCG_BASE_URL}/cards",
-        params={"q": query, "pageSize": page_size},
-        headers=headers,
-        timeout=30,
-    )
+    try:
+        response = requests.get(
+            f"{TCG_BASE_URL}/cards",
+            params={"q": query, "pageSize": page_size},
+            headers=headers,
+            timeout=30,
+        )
+    except requests.Timeout:
+        return []
 
     if response.status_code != 200:
         return []
@@ -220,6 +223,19 @@ async def scan_card(file: UploadFile = File(...)):
         }
 
     candidates = find_candidates(extracted)
+
+    if not candidates and extracted.get("name"):
+        candidates = find_candidates({**extracted, "set_name": "", "set_code": ""})
+
+    if not candidates and extracted.get("card_number"):
+        candidates = find_candidates({**extracted, "name": "", "set_name": "", "set_code": ""})
+
+    if not candidates:
+        return {
+            "candidates": [],
+            "raw": extracted,
+            "error": "not_found",
+        }
 
     return {
         "candidates": candidates,
