@@ -81,7 +81,8 @@ def call_openai_vision(image_base64: str) -> Optional[Dict[str, str]]:
 
     response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
-        return None
+        error = response.text
+        raise HTTPException(status_code=502, detail=f"OpenAI error: {error}")
 
     payload = response.json()
     content = payload.get("choices", [{}])[0].get("message", {}).get("content")
