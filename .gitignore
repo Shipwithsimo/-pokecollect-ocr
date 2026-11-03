@@ -24,3 +24,40 @@ ocr-service/.env
 *.njsproj
 *.sln
 *.sw?
+
+# --- Cantiere v2 ---
+.DS_Store
+node_modules/
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+.npmrc
+.netrc
+.pypirc
+credentials*.json
+*service-account*.json
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+.ssh/
+.aws/
+.gcloud/
+terraform.tfstate*
+.terraform/
+.vercel/
+.netlify/
+.crew/
+.cantiere/secrets.local.json
+# Database locali: aggiunti solo su conferma, potrebbero essere dati voluti
+*.sqlite
+*.sqlite3
+*.db
+# --- fine Cantiere ---
